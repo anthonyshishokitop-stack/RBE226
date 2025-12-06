@@ -13,6 +13,11 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js'></script>
 
+  <!-- Firebase SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-database.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-auth.js"></script>
+
   <style>
     :root{
       --bg:#0a0e17; --card:#1a2332; --txt:#e2e8f0; --border:#334155; --hdr:#1e293b;
@@ -256,7 +261,7 @@
           <div class="form-group"><label>Date</label><input id="u-date" type="date" required></div>
           <div class="form-group"><label>Time</label><input id="u-time" type="time" required></div>
           <div class="form-group"><label>Equipment ID</label><input id="u-loco" list="loco-list" required></div>
-          <div class="form-group"><label>Status</label><select id="u-status"><option>Fixed</option><option>Down</option></select></div>
+          <select id="u-status"><option>Fixed</option><option>Down</option></select></div>
           <div class="form-group"><label>Shift</label><select id="u-shift"><option>Morning</option><option>Afternoon</option><option>Night</option></select></div>
           <div class="form-group"><label>Reason/Fault</label><textarea id="u-reason" required></textarea></div>
           <div class="form-group"><label>Downtime Hours</label><input id="u-downtime" type="number" step="0.1" min="0"></div>
@@ -377,10 +382,38 @@
 </div>
 
 <script>
-  // ==== GLOBAL DATA ====
-  let eq = [], up = [], mt = [], delaysData = [], calendar = null, charts = {};
+  // Firebase Configuration - Replace with your own
+  const firebaseConfig = {
+    apiKey: "AIzaSyDlbzmgZykYM9uHoGFW8jFKZxxs1mAaMJM",
+    authDomain: "rbemine-972a8.firebaseapp.com",
+    projectId: "rbemine-972a8",
+    storageBucket: "rbemine-972a8.firebasestorage.app",
+    messagingSenderId: "188009589982",
+    appId: "1:188009589982:web:61114e6ea73fd22ccc664f",
+    measurementId: "G-17TT2XN7T3"
+  };
 
-  // ==== FULL SHAFTS LIST ====
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+  const eqRef = db.ref('equipment');
+  const upRef = db.ref('updates');
+  const mtRef = db.ref('maintenance');
+  const delaysRef = db.ref('delays');
+
+  // Global Variables
+  let eq = {}, up = {}, mt = {}, delaysData = {};
+  let charts = {};
+  let calendar = null;
+  const currentDate = new Date('2025-12-06'); // Use provided current date for calculations
+
+  // User Name for Updates
+  let userName = localStorage.getItem('userName');
+  if (!userName) {
+    userName = prompt('Enter your name for updates:') || 'Anonymous';
+    localStorage.setItem('userName', userName);
+  }
+
+  // Full Shafts List
   const shafts = [
     '0 Shaft', '1 Shaft', '2 Shaft', '3 Shaft', '4 Shaft', '5 Shaft', '6 Shaft', '7 Shaft',
     '7A Shaft', '8 Shaft', '9 Shaft', '10 Shaft', '10D', '11 Shaft', '11C Shaft', '11D',
@@ -393,25 +426,15 @@
     'Leeuwkop Shaft'
   ];
 
-  // ==== LOCAL STORAGE HELPERS ====
-  function get(key) { return JSON.parse(localStorage.getItem(key)) || []; }
-  function set(key, data) { localStorage.setItem(key, JSON.stringify(data)); }
-
-  // ==== THEME ====
-  window.addEventListener('load', () => {
-    const saved = localStorage.getItem('theme') || 'dark';
-    document.body.setAttribute('data-theme', saved);
-    document.querySelector('.theme-toggle').textContent = saved === 'dark' ? 'Dark Mode' : 'Light Mode';
-  });
+  // Theme Toggle
   function toggleTheme() {
     const cur = document.body.getAttribute('data-theme');
     const newTheme = cur === 'dark' ? 'light' : 'dark';
     document.body.setAttribute('data-theme', newTheme);
     localStorage.setItem('theme', newTheme);
-    document.querySelector('.theme-toggle').textContent = newTheme === 'dark' ? 'Dark Mode' : 'Light Mode';
   }
 
-  // ==== DATE CALCULATIONS ====
+  // Date Calculations
   function calculateNextDue(lastDone, interval) {
     if (!lastDone) return '';
     const d = new Date(lastDone);
@@ -423,198 +446,49 @@
   function calculateDaysLeft(lastDone, interval) {
     if (!lastDone) return NaN;
     const next = new Date(calculateNextDue(lastDone, interval));
-    const today = new Date(); today.setHours(0,0,0,0);
-    next.setHours(0,0,0,0);
+    const today = currentDate; // Use provided current date
     return Math.ceil((next - today) / 86400000);
   }
 
-  // ==== NAVIGATION ====
+  // Navigation
   document.querySelectorAll('#sidebar-menu li').forEach(li => {
-    li.addEventListener('click', () => show(li.dataset.section));
-  });
-  function show(section) {
-    document.querySelectorAll('section').forEach(s => s.classList.add('hidden'));
-    const el = document.getElementById(section);
-    if (el) el.classList.remove('hidden');
-    document.querySelectorAll('#sidebar-menu li').forEach(l => l.classList.remove('active'));
-    const activeLi = document.querySelector(`#sidebar-menu li[data-section="${section}"]`);
-    if (activeLi) activeLi.classList.add('active');
-
-    if (section === 'calendar') setTimeout(initCalendar, 0);
-    if (section === 'maintenance-schedule') populateMaintTable();
-    if (section === 'operations-report') populateOperationsReport();
-  }
-
-  // ==== CALENDAR ====
-  function initCalendar() {
-    const el = document.getElementById('calendar-div');
-    if (!el) return;
-    if (calendar) calendar.destroy();
-    const events = mt.map(m => ({
-      title: `${m.equipment} - ${m.task}`,
-      start: calculateNextDue(m.lastDone, m.interval),
-      backgroundColor: '#3498db', borderColor: '#2980b9', textColor: '#fff'
-    }));
-    calendar = new FullCalendar.Calendar(el, {
-      initialView: 'dayGridMonth', height: 'auto',
-      headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,timeGridWeek' },
-      events, eventDisplay: 'block', dayMaxEvents: true, contentHeight: 'auto', stickyHeaderDates: true
+    li.addEventListener('click', () => {
+      document.querySelectorAll('section').forEach(s => s.classList.add('hidden'));
+      document.getElementById(li.dataset.section).classList.remove('hidden');
+      document.querySelectorAll('#sidebar-menu li').forEach(l => l.classList.remove('active'));
+      li.classList.add('active');
+      const section = li.dataset.section;
+      if (section === 'dashboard') populateDashboard();
+      if (section === 'status-log') populateLogTable();
+      if (section === 'summary') populateSummaryTable();
+      if (section === 'manage-equipment') populateEquipmentTable();
+      if (section === 'maintenance-schedule') populateMaintTable();
+      if (section === 'calendar') initCalendar();
+      if (section === 'operations-report') populateOperationsReport();
     });
-    calendar.render();
-  }
+  });
 
-  // ==== MAINTENANCE TABLE ====
-  function populateMaintTable() {
-    const tbody = document.querySelector('#maint-table tbody');
-    tbody.innerHTML = mt.map((m,i) => {
-      const next = calculateNextDue(m.lastDone, m.interval);
-      const days = calculateDaysLeft(m.lastDone, m.interval);
-      const display = isNaN(days) ? '-' : (days >= 0 ? `${days} days` : `${Math.abs(days)} days overdue`);
-      const color = days > 3 ? '#2ecc71' : '#e74c3c';
-      return `<tr>
-        <td>${m.equipment}</td><td>${m.task}</td><td>${m.interval}</td><td>${m.lastDone}</td>
-        <td>${next}</td><td style="color:${color};font-weight:700;">${display}</td>
-        <td class="maint-actions">
-          <button class="done-btn" onclick="markDone(${i})">Done</button>
-          <button class="edit-btn" onclick="openEditModal(${i})">Edit</button>
-          <button class="delete-btn" onclick="deleteMaint(${i})">Delete</button>
-        </td>
-      </tr>`;
-    }).join('');
-  }
-  function markDone(idx) {
-    const today = new Date().toISOString().slice(0,10);
-    mt[idx].lastDone = today;
-    set('maintenance', mt);
-    populateMaintTable(); populateDashboard();
-    if (!document.getElementById('calendar').classList.contains('hidden')) initCalendar();
-  }
-  function deleteMaint(idx) {
-    if (confirm('Delete this task?')) {
-      mt.splice(idx,1); set('maintenance', mt);
-      populateMaintTable(); populateDashboard();
-      if (!document.getElementById('calendar').classList.contains('hidden')) initCalendar();
-    }
-  }
-  function openEditModal(idx) {
-    const m = mt[idx];
-    document.getElementById('edit-index').value = idx;
-    document.getElementById('edit-equipment').value = m.equipment;
-    document.getElementById('edit-task').value = m.task;
-    document.getElementById('edit-interval').value = m.interval;
-    document.getElementById('edit-last').value = m.lastDone;
-    document.getElementById('edit-modal').classList.add('active');
-  }
-  function closeEditModal() { document.getElementById('edit-modal').classList.remove('active'); }
-  function closeAddMaintModal() { document.getElementById('add-maint-modal').classList.remove('active'); }
-
-  // ==== FORMS ====
-  document.getElementById('add-maint-form').onsubmit = e => {
-    e.preventDefault();
-    mt.push({ equipment:e.target[0].value, task:e.target[1].value,
-              interval:e.target[2].value, lastDone:e.target[3].value });
-    set('maintenance', mt); closeAddMaintModal(); e.target.reset();
-    populateMaintTable(); populateDashboard();
-    if (!document.getElementById('calendar').classList.contains('hidden')) initCalendar();
-  };
-  document.getElementById('edit-maint-form').onsubmit = e => {
-    e.preventDefault();
-    const i = parseInt(document.getElementById('edit-index').value);
-    mt[i] = { equipment:e.target[0].value, task:e.target[1].value,
-              interval:e.target[2].value, lastDone:e.target[3].value };
-    set('maintenance', mt); closeEditModal();
-    populateMaintTable(); populateDashboard();
-    if (!document.getElementById('calendar').classList.contains('hidden')) initCalendar();
-  };
-  document.getElementById('add-eq-form').onsubmit = e => {
-    e.preventDefault();
-    eq.push({ Shaft:e.target[0].value, Level:e.target[1].value,
-              'Loco Size':e.target[2].value, 'Loco Number':e.target[3].value,
-              SECTION:e.target[4].value });
-    set('equipment', eq); fillDatalist(); populateDashboard(); populateEquipmentTable(); e.target.reset();
-  };
-  document.getElementById('add-status-form').onsubmit = e => {
-    e.preventDefault();
-    up.push({ Date:e.target[0].value, Time:e.target[1].value,
-              'Equipment ID':e.target[2].value, Status:e.target[3].value,
-              Shift:e.target[4].value, 'Reason/Fault':e.target[5].value,
-              'Downtime Hours':parseFloat(e.target[6].value)||0,
-              'Is Failure?':parseInt(e.target[7].value) });
-    set('updates', up); populateDashboard(); populateLogTable(); populateSummaryTable(); e.target.reset();
-  };
-
-  // ==== SEARCH ====
-  document.getElementById('search-form').onsubmit = e => {
-    e.preventDefault();
-    const loco = e.target[0].value.trim();
-    const date = e.target[1].value;
-    const showAll = e.target[2].checked;
-
-    const resultsDiv = document.getElementById('search-results');
-    resultsDiv.innerHTML = '';
-
-    const equipment = eq.find(e => e['Loco Number'] === loco);
-    if (!equipment) {
-      resultsDiv.innerHTML = '<p style="color:#e74c3c; font-weight:700;">Equipment not found.</p>';
-      return;
-    }
-
-    const header = `
-      <div style="background:rgba(13,71,161,.15);padding:1rem;border-radius:12px;margin-bottom:1rem;">
-        <strong>Equipment:</strong> ${equipment['Loco Number']} – ${equipment.Shaft}<br>
-        <strong>Level:</strong> ${equipment.Level} | 
-        <strong>Size:</strong> ${equipment['Loco Size']} | 
-        <strong>Section:</strong> ${equipment.SECTION}
-      </div>`;
-
-    let updates = up.filter(u => u['Equipment ID'] === loco);
-    if (date && !showAll) updates = updates.filter(u => u.Date === date);
-    updates.sort((a,b) => new Date(b.Date+' '+b.Time) - new Date(a.Date+' '+a.Time));
-
-    const updatesHTML = updates.length ? updates.map(u => `
-      <div style="padding:12px;border-bottom:1px solid rgba(255,255,255,.12);">
-        <strong>${u.Date} ${u.Time}</strong> – 
-        <span style="color:${u.Status==='Fixed'?'#2ecc71':'#e74c3c'}">${u.Status}</span>:
-        ${u['Reason/Fault']} 
-        ${u['Downtime Hours']?`<em>(${u['Downtime Hours']} h)</em>`:''}
-        ${u['Is Failure?']===1?'<span class="risk-badge risk-high" style="margin-left:8px;">FAILURE</span>':''}
-      </div>`).join('') : '<p style="color:#f39c12;font-style:italic;">No updates yet.</p>';
-
-    resultsDiv.innerHTML = header + updatesHTML;
-  };
-
-  // ==== DASHBOARD HELPERS ====
-  function getStatus(id) {
-    const updates = up.filter(u => u['Equipment ID'] === id);
-    if (!updates.length) return {status:'Unknown', days:0};
-    const latest = updates.sort((a,b)=>new Date(b.Date+' '+b.Time)-new Date(a.Date+' '+a.Time))[0];
-    const downUpdates = updates.filter(u=>u.Status!=='Fixed');
-    const lastDown = downUpdates.length ? downUpdates.sort((a,b)=>new Date(b.Date+' '+b.Time)-new Date(a.Date+' '+a.Time))[0] : null;
-    const days = lastDown ? Math.floor((new Date() - new Date(lastDown.Date+' '+lastDown.Time)) / 86400000) : 0;
-    return {status:latest.Status==='Fixed'?'Operational':'Down', days};
-  }
-
+  // Datalist Fill
   function fillDatalist() {
     const list = document.getElementById('loco-list');
-    list.innerHTML = eq.map(e=>`<option value="${e['Loco Number']}">${e['Loco Number']} - ${e.Shaft}</option>`).join('');
+    list.innerHTML = Object.values(eq).map(e => `<option value="${e['Loco Number']}">${e['Loco Number']} - ${e.Shaft}</option>`).join('');
     const jobSel = document.getElementById('job-loco');
-    jobSel.innerHTML = '<option value="">Select Equipment</option>' + eq.map(e=>`<option value="${e['Loco Number']}">${e['Loco Number']}</option>`).join('');
-
+    jobSel.innerHTML = '<option value="">Select Equipment</option>' + Object.values(eq).map(e => `<option value="${e['Loco Number']}">${e['Loco Number']}</option>`).join('');
     const sf = document.getElementById('shaft-filter');
-    sf.innerHTML = '<option value="">All Shafts</option>' + shafts.map(s=>`<option>${s}</option>`).join('');
+    sf.innerHTML = '<option value="">All Shafts</option>' + shafts.map(s => `<option>${s}</option>`).join('');
     const addShaft = document.getElementById('shaft');
-    addShaft.innerHTML = '<option value="">Select Shaft</option>' + shafts.map(s=>`<option>${s}</option>`).join('');
+    addShaft.innerHTML = '<option value="">Select Shaft</option>' + shafts.map(s => `<option>${s}</option>`).join('');
   }
 
-  // ==== POPULATE DASHBOARD ====
+  // Dashboard Populate
   function populateDashboard() {
     const shaft = document.getElementById('shaft-filter').value;
-    const filtered = shaft ? eq.filter(e=>e.Shaft===shaft) : eq;
+    const filtered = shaft ? Object.values(eq).filter(e => e.Shaft === shaft) : Object.values(eq);
     const total = filtered.length;
-    const operational = filtered.filter(e=>getStatus(e['Loco Number']).status==='Operational').length;
-    const downShort = filtered.filter(e=>getStatus(e['Loco Number']).status==='Down' && getStatus(e['Loco Number']).days <=7).length;
-    const downLong  = filtered.filter(e=>getStatus(e['Loco Number']).status==='Down' && getStatus(e['Loco Number']).days >7).length;
-    const avail = total ? ((operational/total)*100).toFixed(1) : 0;
+    const operational = filtered.filter(e => getStatus(e['Loco Number']).status === 'Operational').length;
+    const downShort = filtered.filter(e => getStatus(e['Loco Number']).status === 'Down' && getStatus(e['Loco Number']).days <= 7).length;
+    const downLong = filtered.filter(e => getStatus(e['Loco Number']).status === 'Down' && getStatus(e['Loco Number']).days > 7).length;
+    const avail = total ? ((operational / total) * 100).toFixed(1) : 0;
 
     document.getElementById('kpi-grid').innerHTML = `
       <div class="kpi-card green"><h2>${operational}</h2><p>Operational</p></div>
@@ -622,302 +496,189 @@
       <div class="kpi-card red"><h2>${downLong}</h2><p>Down Greater Than 7d</p></div>
       <div class="kpi-card" style="background:#6c5ce7;color:#fff;"><h2>${avail}%</h2><p>Fleet Availability</p></div>`;
 
-    // ---- Date range for filtered equipment only ----
-    const dates = filtered.flatMap(e => up.filter(u=>u['Equipment ID']===e['Loco Number']).map(u=>u.Date));
-    const minD = dates.length ? dates.reduce((a,c)=>c<a?c:a) : new Date().toISOString().slice(0,10);
-    const maxD = dates.length ? dates.reduce((a,c)=>c>a?c:a) : new Date().toISOString().slice(0,10);
-    const totalDays = Math.ceil((new Date(maxD)-new Date(minD))/86400000)+1;
+    // Date range
+    const dates = filtered.flatMap(e => Object.values(up).filter(u => u['Equipment ID'] === e['Loco Number']).map(u => u.Date));
+    const minD = dates.length ? dates.reduce((a, c) => c < a ? c : a) : currentDate.toISOString().slice(0,10);
+    const maxD = dates.length ? dates.reduce((a, c) => c > a ? c : a) : currentDate.toISOString().slice(0,10);
+    const totalDays = Math.ceil((new Date(maxD) - new Date(minD)) / 86400000) + 1;
 
-    const availLabels=[],availData=[],failLabels=[],failData=[],mttfData=[];
-    filtered.forEach(e=>{
+    const availLabels = [], availData = [], failLabels = [], failData = [], mttfData = [];
+    filtered.forEach(e => {
       const id = e['Loco Number'];
-      const eu = up.filter(u=>u['Equipment ID']===id);
-      const downH = eu.reduce((s,u)=>s+(u['Downtime Hours']||0),0);
-      const downD = downH/24;
+      const eu = Object.values(up).filter(u => u['Equipment ID'] === id);
+      const downH = eu.reduce((s, u) => s + (u['Downtime Hours'] || 0), 0);
+      const downD = downH / 24;
       const opD = totalDays - downD;
-      const failures = eu.filter(u=>u['Is Failure?']===1).length;
-      const mttf = failures>0 ? (opD/failures) : null;
+      const failures = eu.filter(u => u['Is Failure?'] === 1).length;
+      const mttf = failures > 0 ? (opD / failures) : null;
 
-      availLabels.push(id); availData.push(totalDays>0?((opD/totalDays)*100).toFixed(1):0);
+      availLabels.push(id); availData.push(totalDays > 0 ? ((opD / totalDays) * 100).toFixed(1) : 0);
       failLabels.push(id); failData.push(failures);
       mttfData.push(mttf);
     });
 
-    // destroy old charts
-    Object.values(charts).forEach(c=>c && c.destroy());
+    // Destroy old charts
+    Object.values(charts).forEach(c => c && c.destroy());
 
     charts.avail = new Chart(document.getElementById('availabilityChart').getContext('2d'), {
-      type:'bar', data:{labels:availLabels,datasets:[{label:'Availability %',data:availData,backgroundColor:'#00d2d3',borderRadius:8}]},
-      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,max:100}}}
+      type: 'bar', data: { labels: availLabels, datasets: [{ label: 'Availability %', data: availData, backgroundColor: '#00d2d3', borderRadius: 8 }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, max: 100 } } }
     });
     charts.fail = new Chart(document.getElementById('failuresChart').getContext('2d'), {
-      type:'bar', data:{labels:failLabels,datasets:[{label:'Failures',data:failData,backgroundColor:'#e74c3c',borderRadius:8}]},
-      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}
+      type: 'bar', data: { labels: failLabels, datasets: [{ label: 'Failures', data: failData, backgroundColor: '#e74c3c', borderRadius: 8 }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
     });
     charts.mttf = new Chart(document.getElementById('mttfChart').getContext('2d'), {
-      type:'bar', data:{labels:availLabels,datasets:[{label:'MTTF Days',data:mttfData,backgroundColor:'#3498db',borderRadius:8}]},
-      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}
+      type: 'bar', data: { labels: availLabels, datasets: [{ label: 'MTTF Days', data: mttfData, backgroundColor: '#3498db', borderRadius: 8 }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
     });
     charts.delay = new Chart(document.getElementById('delayChart').getContext('2d'), {
-      type:'pie', data:{labels:['Awaiting Spares','Safety'],datasets:[{data:[8,4],backgroundColor:['#f39c12','#e74c3c']}]},
-      options:{responsive:true,maintainAspectRatio:false}
+      type: 'pie', data: { labels: ['Awaiting Spares', 'Safety'], datasets: [{ data: [8, 4], backgroundColor: ['#f39c12', '#e74c3c'] }] },
+      options: { responsive: true, maintainAspectRatio: false }
     });
 
-    // high-risk
-    const high = filtered.filter(e=>getStatus(e['Loco Number']).days>7);
-    document.getElementById('high-risk-list').innerHTML = high.map(e=>`<li class="alert-item"><span>Loco ${e['Loco Number']} - ${e.Shaft}</span><span class="risk-badge risk-high">CRITICAL</span></li>`).join('');
-    document.getElementById('high-risk-alerts').classList.toggle('hidden',high.length===0);
+    // High-risk
+    const high = filtered.filter(e => getStatus(e['Loco Number']).days > 7);
+    document.getElementById('high-risk-list').innerHTML = high.map(e => `<li class="alert-item"><span>Loco ${e['Loco Number']} - ${e.Shaft}</span><span class="risk-badge risk-high">CRITICAL</span></li>`).join('');
+    document.getElementById('high-risk-alerts').classList.toggle('hidden', high.length === 0);
 
-    // upcoming maintenance
-    mt.sort((a,b)=>calculateDaysLeft(a.lastDone,a.interval)-calculateDaysLeft(b.lastDone,b.interval));
-    const maintList = document.getElementById('maintenance-list');
-    maintList.innerHTML = mt.map(m=>{
-      const days = calculateDaysLeft(m.lastDone,m.interval);
-      const display = isNaN(days) ? '-' : (days>=0?`${days} days left`:`${Math.abs(days)} days overdue`);
-      const color = days>3?'#2ecc71':'#e74c3c';
+    // Upcoming maintenance
+    const sortedMt = Object.values(mt).sort((a, b) => calculateDaysLeft(a.lastDone, a.interval) - calculateDaysLeft(b.lastDone, b.interval));
+    document.getElementById('maintenance-list').innerHTML = sortedMt.map(m => {
+      const days = calculateDaysLeft(m.lastDone, m.interval);
+      const display = isNaN(days) ? '-' : (days >= 0 ? `${days} days left` : `${Math.abs(days)} days overdue`);
+      const color = days > 3 ? '#2ecc71' : '#e74c3c';
       return `<div style="padding:12px 0;border-bottom:1px solid rgba(255,255,255,.12);display:flex;justify-content:space-between;">
         <span><strong>${m.equipment}</strong> → ${m.task}</span>
         <span style="color:${color};font-weight:700;">${display}</span>
       </div>`;
     }).join('');
 
-    // predictive
-    const predictive = mt.filter(m=>calculateDaysLeft(m.lastDone,m.interval)<=7 && !isNaN(calculateDaysLeft(m.lastDone,m.interval)));
-    document.getElementById('predictive-list').innerHTML = predictive.map(m=>{
-      const days = calculateDaysLeft(m.lastDone,m.interval);
-      const label = days>0?`${days} days`:'OVERDUE';
+    // Predictive
+    const predictive = Object.values(mt).filter(m => calculateDaysLeft(m.lastDone, m.interval) <= 7 && !isNaN(calculateDaysLeft(m.lastDone, m.interval)));
+    document.getElementById('predictive-list').innerHTML = predictive.map(m => {
+      const days = calculateDaysLeft(m.lastDone, m.interval);
+      const label = days > 0 ? `${days} days` : 'OVERDUE';
       return `<li class="alert-item"><span>${m.equipment} - ${m.task}</span><span class="risk-badge risk-predict">${label}</span></li>`;
     }).join('');
-    document.getElementById('predictive-alerts').classList.toggle('hidden',predictive.length===0);
+    document.getElementById('predictive-alerts').classList.toggle('hidden', predictive.length === 0);
   }
 
-  // ==== OTHER POPULATE FUNCTIONS ====
-  function populateOperationsReport() {
-    // The original hard-coded values – keep them for the Ops Report page
-    const opStatus = [{status:'Covered (Green)',count:44,percentage:'93.62%'},
-                      {status:'Covered within 7 days (Orange)',count:3,percentage:'6.38%'},
-                      {status:'Overdue (Red)',count:0,percentage:'0.00%'},
-                      {status:'Total',count:47,percentage:'100.00%'}];
-    const problem = [{id:'15',status:'Down',color:'ORANGE',fault:'BRAKES',downtime:384.0},
-                     {id:'270',status:'Down',color:'ORANGE',fault:'Not Starting',downtime:0.0},
-                     {id:'155',status:'Down',color:'ORANGE',fault:'BRAKES FAILURE',downtime:0.0}];
-    const highRisk = [{id:'15',failures:15,mttf:11.33,availability:'91.40%'},
-                      {id:'217',failures:6,mttf:30.00,availability:'96.77%'}];
-
-    document.getElementById('op-status-tbody').innerHTML = opStatus.map(r=>`<tr><td>${r.status}</td><td>${r.count}</td><td>${r.percentage}</td></tr>`).join('');
-    document.getElementById('problem-equipment-tbody').innerHTML = problem.map(r=>`<tr><td>${r.id}</td><td>${r.status}</td><td style="color:#f39c12;">${r.color}</td><td>${r.fault}</td><td>${r.downtime}</td></tr>`).join('');
-    document.getElementById('high-risk-tbody').innerHTML = highRisk.map(r=>`<tr><td>${r.id}</td><td>${r.failures}</td><td>${r.mttf}</td><td>${r.availability}</td></tr>`).join('');
+  // Get Status
+  function getStatus(id) {
+    const updates = Object.values(up).filter(u => u['Equipment ID'] === id);
+    if (!updates.length) return { status: 'Unknown', days: 0 };
+    const latest = updates.sort((a, b) => new Date(b.Date + ' ' + b.Time) - new Date(a.Date + ' ' + a.Time))[0];
+    const downUpdates = updates.filter(u => u.Status !== 'Fixed');
+    const lastDown = downUpdates.length ? downUpdates.sort((a, b) => new Date(b.Date + ' ' + b.Time) - new Date(a.Date + ' ' + a.Time))[0] : null;
+    const days = lastDown ? Math.floor((currentDate - new Date(lastDown.Date + ' ' + lastDown.Time)) / 86400000) : 0;
+    return { status: latest.Status === 'Fixed' ? 'Operational' : 'Down', days };
   }
 
-  function populateLogTable() {
-    const tbody = document.querySelector('#log-table tbody');
-    tbody.innerHTML = up.sort((a,b)=>new Date(b.Date+' '+b.Time)-new Date(a.Date+' '+a.Time))
-      .map(u=>`<tr><td>${u.Date}</td><td>${u.Time}</td><td>${u['Equipment ID']}</td><td>${u.Status}</td>
-        <td>${u.Shift}</td><td>${u['Reason/Fault']}</td><td>${u['Downtime Hours']||0}</td><td>${u['Is Failure?']===1?'Yes':'No'}</td></tr>`).join('');
-  }
-  function populateSummaryTable() {
-    const dates = up.map(u=>u.Date);
-    const minD = dates.length?dates.reduce((a,c)=>c<a?c:a):new Date().toISOString().slice(0,10);
-    const maxD = dates.length?dates.reduce((a,c)=>c>a?c:a):new Date().toISOString().slice(0,10);
-    const totalDays = Math.ceil((new Date(maxD)-new Date(minD))/86400000)+1;
-    const tbody = document.querySelector('#summary-table tbody');
-    tbody.innerHTML = eq.map(e=>{
-      const id=e['Loco Number'];
-      const eu=up.filter(u=>u['Equipment ID']===id);
-      const downH=eu.reduce((s,u)=>s+(u['Downtime Hours']||0),0);
-      const downD=downH/24; const opD=totalDays-downD;
-      const failures=eu.filter(u=>u['Is Failure?']===1).length;
-      const mttf=failures>0?(opD/failures).toFixed(1):'N/A';
-      const avail=totalDays>0?((opD/totalDays)*100).toFixed(1):0;
-      const last=eu.sort((a,b)=>new Date(b.Date+' '+b.Time)-new Date(a.Date+' '+a.Time))[0];
-      const status=getStatus(id).status;
-      return `<tr><td>${id}</td><td>${eu.length}</td><td>${totalDays}</td><td>${downD.toFixed(1)}</td>
-        <td>${opD.toFixed(1)}</td><td>${failures}</td><td>${mttf}</td><td>${avail}%</td>
-        <td>${last?last.Date+' '+last.Time:'-'}</td><td>${status}</td></tr>`;
-    }).join('');
-  }
-  function populateEquipmentTable() {
-    const tbody = document.querySelector('#equipment-table tbody');
-    tbody.innerHTML = eq.map(e=>`<tr><td>${e.Shaft}</td><td>${e.Level}</td><td>${e['Loco Size']}</td>
-      <td>${e['Loco Number']}</td><td>${e.SECTION}</td></tr>`).join('');
-  }
+  // Search Form
+  document.getElementById('search-form').addEventListener('submit', searchStatus);
 
-  // ==== FILTER ====
-  function filterDashboard() { populateDashboard(); }
-
-  // ==== EXPORTS ====
-  function generateJobPDF() {
-    const id = document.getElementById('job-loco').value || document.getElementById('s-loco').value;
-    if (!id) return alert('Select an Equipment ID first');
-    const {jsPDF} = window.jspdf;
-    const doc = new jsPDF();
-    let y = 16;
-    doc.setFontSize(12);
-    doc.text('Job Order:',16,y); y+=12;
-    doc.text('Follow correct procedure to complete the task and attach risk assessment',16,y); y+=16;
-    doc.text('Work carried out / comments:',16,y); y+=10;
-    for (let i=0;i<3;i++){doc.line(16,y,190,y);y+=10;} y+=10;
-    doc.text('Job duration:',16,y); y+=10;
-    doc.text('Start date ______   Start time ______   End date ______   End time ______   Duration ______',16,y); y+=16;
-    doc.text('Failure Information:',16,y); y+=10;
-    doc.autoTable({startY:y,head:[['Object part','Problem','Cause of damage','Activity carried out']],body:[['','','','']],theme:'grid',headStyles:{fillColor:[0,128,128]}});
-    y = doc.lastAutoTable.finalY + 12;
-    doc.text("Five Why's:",16,y); y+=10;
-    doc.autoTable({startY:y,head:[['Why','Why','Why','Why','Why']],body:[['','','','','']],theme:'grid',headStyles:{fillColor:[0,128,128]}});
-    y = doc.lastAutoTable.finalY + 12;
-    doc.text('Lost time/delays (Hrs):',16,y); y+=10;
-    doc.autoTable({startY:y,head:[['Safety','Work Issues','Awaiting Spares','Hospital Visits','Awaiting Transport','Travel Time','Weather','Machn. Rel.']],body:[['SA','WI','AS','HV','AT','TT','WH','MR']],theme:'grid',headStyles:{fillColor:[0,128,128]}});
-    y = doc.lastAutoTable.finalY + 12;
-    doc.text('Name- Artisan: ______   Sign: ______   Date: ______',16,y); y+=16;
-    doc.text('Comments- Foreman:',16,y); y+=10;
-    for (let i=0;i<3;i++){doc.line(16,y,190,y);y+=10;} y+=10;
-    doc.text('Name- Foreman: ______   Sign: ______   Date: ______',16,y);
-    doc.save(`Job_Order_${id}.pdf`);
+  function searchStatus(e) {
+    e.preventDefault();
+    const loco = document.getElementById('s-loco').value.trim();
+    const date = document.getElementById('s-date').value;
+    const showAll = document.getElementById('show-all-history').checked;
+    const resultsDiv = document.getElementById('search-results');
+    resultsDiv.innerHTML = '';
+    const equipment = Object.values(eq).find(e => e['Loco Number'] === loco);
+    if (!equipment) return resultsDiv.innerHTML = '<p>Equipment not found.</p>';
+    const header = `
+      <div style="background:rgba(13,71,161,.15);padding:1rem;border-radius:12px;margin-bottom:1rem;">
+        <strong>Equipment:</strong> ${equipment['Loco Number']} – ${equipment.Shaft}<br>
+        <strong>Level:</strong> ${equipment.Level} | 
+        <strong>Size:</strong> ${equipment['Loco Size']} | 
+        <strong>Section:</strong> ${equipment.SECTION}
+      </div>`;
+    let updates = Object.values(up).filter(u => u['Equipment ID'] === loco);
+    if (date && !showAll) updates = updates.filter(u => u.Date === date);
+    updates.sort((a, b) => new Date(b.Date + ' ' + b.Time) - new Date(a.Date + ' ' + a.Time));
+    const updatesHTML = updates.length ? updates.map(u => `
+      <div style="padding:12px;border-bottom:1px solid rgba(255,255,255,.12);">
+        <strong>${u.Date} ${u.Time}</strong> – 
+        <span style="color:${u.Status==='Fixed'?'#2ecc71':'#e74c3c'}">${u.Status}</span>:
+        ${u['Reason/Fault']} 
+        ${u['Downtime Hours'] ? `<em>(${u['Downtime Hours']} h)</em>` : ''}
+        ${u['Is Failure?'] === 1 ? '<span class="risk-badge risk-high" style="margin-left:8px;">FAILURE</span>' : ''}
+      </div>`).join('') : '<p>No updates yet.</p>';
+    resultsDiv.innerHTML = header + updatesHTML;
   }
 
-  function exportOperationsReportPDF() {
-    const {jsPDF} = window.jspdf;
-    const doc = new jsPDF('p','mm','a4');
-    let y = 16;
-    doc.setFontSize(18); doc.setTextColor(0,128,128);
-    doc.text('All Operations Report',16,y); y+=12;
-    doc.setFontSize(10); doc.setTextColor(100);
-    doc.text(`Generated: ${new Date().toLocaleString('en-ZA')}`,16,y); y+=12;
+  // Initial Setup
+  document.getElementById('m-last').value = currentDate.toISOString().slice(0,10);
+  document.getElementById('u-date').value = currentDate.toISOString().slice(0,10);
+  document.getElementById('s-date').value = currentDate.toISOString().slice(0,10);
 
-    doc.setFontSize(16);
-    doc.text('Operation Status',20,y); y+=10;
-    doc.autoTable({startY:y,head:[['Status','Count','Percentage']],body:[
-      ['Covered (Green)','44','93.62%'],['Covered within 7 days (Orange)','3','6.38%'],
-      ['Overdue (Red)','0','0.00%'],['Total','47','100.00%']
-    ],theme:'grid',headStyles:{fillColor:[0,128,128]}}); y = doc.lastAutoTable.finalY + 20;
+  // Load Theme
+  const savedTheme = localStorage.getItem('theme') || 'dark';
+  document.body.setAttribute('data-theme', savedTheme);
+  document.querySelector('.theme-toggle').textContent = savedTheme === 'dark' ? 'Dark Mode' : 'Light Mode';
 
-    doc.setFontSize(16);
-    doc.text('Problem Equipment',20,y); y+=10;
-    doc.autoTable({startY:y,head:[['Equipment ID','Status','Color','Last Reason/Fault','Total Downtime Hours']],body:[
-      ['15','Down','ORANGE','BRAKES','384.0'],
-      ['270','Down','ORANGE','Not Starting','0.0'],
-      ['155','Down','ORANGE','BRAKES FAILURE','0.0']
-    ],theme:'grid',headStyles:{fillColor:[0,128,128]}}); y = doc.lastAutoTable.finalY + 20;
+  // Real-time Listeners and Initial Data
+  eqRef.on('value', snap => { eq = snap.val() || {}; fillDatalist(); populateDashboard(); populateEquipmentTable(); populateSummaryTable(); });
+  upRef.on('value', snap => { up = snap.val() || {}; populateDashboard(); populateLogTable(); populateSummaryTable(); });
+  mtRef.on('value', snap => { mt = snap.val() || {}; populateMaintTable(); populateDashboard(); });
+  delaysRef.on('value', snap => { delaysData = snap.val() || {}; });
 
-    doc.setFontSize(16);
-    doc.text('Focus Areas: High Risk Equipment',20,y); y+=10;
-    doc.autoTable({startY:y,head:[['Equipment ID','Number of Failures','MTTF (Days)','Availability %']],body:[
-      ['15','15','11.33','91.40%'],['217','6','30.00','96.77%']
-    ],theme:'grid',headStyles:{fillColor:[0,128,128]}});
-
-    doc.save(`All_Operations_Report_${new Date().toISOString().slice(0,10)}.pdf`);
-  }
-
-  async function exportDashboardPDF() {
-    const {jsPDF} = window.jspdf;
-    const doc = new jsPDF('l','mm','a4');
-    let y = 20;
-
-    // Title
-    doc.setFontSize(22); doc.setTextColor(0,128,128);
-    doc.text('Impala RBE Dashboard', 15, y); y += 15;
-    doc.setFontSize(10); doc.setTextColor(80);
-    doc.text(`Generated: ${new Date().toLocaleString('en-ZA')}`, 15, y); y += 15;
-
-    // KPI cards
-    const kpis = [
-      {label:'Operational',value:document.querySelectorAll('.kpi-card')[0]?.querySelector('h2').textContent||'0',color:'#2ecc71'},
-      {label:'Down <7d',value:document.querySelectorAll('.kpi-card')[1]?.querySelector('h2').textContent||'0',color:'#f39c12'},
-      {label:'Down >7d',value:document.querySelectorAll('.kpi-card')[2]?.querySelector('h2').textContent||'0',color:'#e74c3c'},
-      {label:'Availability',value:(document.querySelectorAll('.kpi-card')[3]?.querySelector('h2').textContent||'0')+'%',color:'#6c5ce7'}
-    ];
-    doc.setFontSize(14);
-    kpis.forEach((k,i)=>{
-      doc.setTextColor(k.color === '#6c5ce7' ? 255 : 0);
-      doc.text(`${k.label}: ${k.value}`, 15 + i*70, y);
-    });
-    y += 20;
-
-    // Add canvas images (availability, failures, MTTF)
-    const canvases = ['availabilityChart','failuresChart','mttfChart'];
-    for (const id of canvases) {
-      const canvas = document.getElementById(id);
-      if (canvas) {
-        const img = canvas.toDataURL('image/png');
-        doc.addImage(img, 'PNG', 15, y, 260, 80);
-        y += 90;
-      }
+  // Seed Initial Data if Empty
+  eqRef.once('value').then(snap => {
+    if (!snap.exists()) {
+      const initialEq = [
+        {Shaft:'1 Shaft',Level:'14 Level','Loco Size':'10t Loco','Loco Number':'364',SECTION:'1245'},
+        {Shaft:'CLAPHAM',Level:'15 Level','Loco Size':'8t Loco','Loco Number':'217',SECTION:'5678'},
+        {Shaft:'North Decline',Level:'20 Level','Loco Size':'12t Loco','Loco Number':'412',SECTION:'8901'},
+        {Shaft:'1 Shaft',Level:'16 Level','Loco Size':'10t Loco','Loco Number':'444',SECTION:'2234'},
+        {Shaft:'1 Shaft',Level:'17 Level','Loco Size':'10t Loco','Loco Number':'155',SECTION:'3345'},
+        {Shaft:'1 Shaft',Level:'18 Level','Loco Size':'10t Loco','Loco Number':'158',SECTION:'4456'},
+        {Shaft:'1 Shaft',Level:'19 Level','Loco Size':'10t Loco','Loco Number':'15',SECTION:'5567'},
+        {Shaft:'1 Shaft',Level:'20 Level','Loco Size':'10t Loco','Loco Number':'270',SECTION:'6678'}
+      ];
+      initialEq.forEach(e => eqRef.child(e['Loco Number']).set(e));
     }
+  });
 
-    doc.save(`Dashboard_${new Date().toISOString().slice(0,10)}.pdf`);
-  }
+  upRef.once('value').then(snap => {
+    if (!snap.exists()) {
+      const initialUp = [
+        { Date: '2025-11-05', Time: '07:30', 'Equipment ID': '364', Status: 'Fixed', Shift: 'Morning', 'Reason/Fault': 'Brake pads replaced', 'Downtime Hours': 3.5, 'Is Failure?': 1 },
+        { Date: '2025-11-04', Time: '14:20', 'Equipment ID': '217', Status: 'Down', Shift: 'Afternoon', 'Reason/Fault': 'Hydraulic leak', 'Downtime Hours': 8, 'Is Failure?': 1 },
+        { Date: '2025-11-10', Time: '09:00', 'Equipment ID': '15', Status: 'Down', Shift: 'Morning', 'Reason/Fault': 'BRAKES', 'Downtime Hours': 384, 'Is Failure?': 1 },
+        { Date: '2025-11-10', Time: '10:00', 'Equipment ID': '270', Status: 'Down', Shift: 'Morning', 'Reason/Fault': 'Not Starting', 'Downtime Hours': 0, 'Is Failure?': 1 },
+        { Date: '2025-11-10', Time: '11:00', 'Equipment ID': '155', Status: 'Down', Shift: 'Morning', 'Reason/Fault': 'BRAKES FAILURE', 'Downtime Hours': 0, 'Is Failure?': 1 }
+      ];
+      initialUp.forEach(u => upRef.push(u));
+    }
+  });
 
-  function exportLogCSV() {
-    let csv='Date,Time,Equipment ID,Status,Shift,Reason/Fault,Downtime Hours,Is Failure?\n';
-    up.forEach(u=>csv+=`${u.Date},${u.Time},${u['Equipment ID']},${u.Status},${u.Shift},"${u['Reason/Fault']}",${u['Downtime Hours']||0},${u['Is Failure?']===1?'Yes':'No'}\n`);
-    const blob=new Blob([csv],{type:'text/csv'});
-    const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
-    a.download='RBE_Status_Log.csv'; a.click();
-  }
+  mtRef.once('value').then(snap => {
+    if (!snap.exists()) {
+      const initialMt = [
+        {equipment:'364',task:'Oil Change',interval:'monthly',lastDone:'2025-05-01'},
+        {equipment:'444',task:'Brake Inspection',interval:'weekly',lastDone:'2025-05-20'},
+        {equipment:'217',task:'Service',interval:'weekly',lastDone:'2025-11-08'},
+        {equipment:'155',task:'REPLACE BRAKE SHOES',interval:'weekly',lastDone:'2025-11-07'},
+        {equipment:'158',task:'CHANGE OIL',interval:'weekly',lastDone:'2025-11-07'}
+      ];
+      initialMt.forEach(m => mtRef.push(m));
+    }
+  });
 
-  async function exportMaintPDF() {
-    const {jsPDF}=window.jspdf; const doc=new jsPDF();
-    const rows=mt.map(m=>{
-      const days=calculateDaysLeft(m.lastDone,m.interval);
-      const disp=isNaN(days)?'-':(days>=0?days:Math.abs(days)+' overdue');
-      return [m.equipment,m.task,m.interval,m.lastDone,calculateNextDue(m.lastDone,m.interval),disp];
-    });
-    doc.autoTable({
-      head:[['Equipment','Task','Interval','Last Done','Due','Days Left']],
-      body:rows, theme:'grid', headStyles:{fillColor:[13,71,161]}
-    });
-    doc.save(`Maintenance_Schedule_${new Date().toISOString().slice(0,10)}.pdf`);
-  }
+  delaysRef.once('value').then(snap => {
+    if (!snap.exists()) {
+      const initialDelays = [
+        { equipment: '364', reason: 'Awaiting Spares', hours: 8, date: '2025-11-04' },
+        { equipment: '217', reason: 'Safety Stand-down', hours: 4, date: '2025-11-05' }
+      ];
+      initialDelays.forEach(d => delaysRef.push(d));
+    }
+  });
 
-  // ==== INITIAL LOAD ====
-  eq = get('equipment'); up = get('updates'); mt = get('maintenance'); delaysData = get('delays');
-  if (!eq.length) {
-    eq = [
-      {Shaft:'1 Shaft',Level:'14 Level','Loco Size':'10t Loco','Loco Number':'364',SECTION:'1245'},
-      {Shaft:'CLAPHAM',Level:'15 Level','Loco Size':'8t Loco','Loco Number':'217',SECTION:'5678'},
-      {Shaft:'North Decline',Level:'20 Level','Loco Size':'12t Loco','Loco Number':'412',SECTION:'8901'},
-      {Shaft:'1 Shaft',Level:'16 Level','Loco Size':'10t Loco','Loco Number':'444',SECTION:'2234'},
-      {Shaft:'1 Shaft',Level:'17 Level','Loco Size':'10t Loco','Loco Number':'155',SECTION:'3345'},
-      {Shaft:'1 Shaft',Level:'18 Level','Loco Size':'10t Loco','Loco Number':'158',SECTION:'4456'},
-      {Shaft:'1 Shaft',Level:'19 Level','Loco Size':'10t Loco','Loco Number':'15',SECTION:'5567'},
-      {Shaft:'1 Shaft',Level:'20 Level','Loco Size':'10t Loco','Loco Number':'270',SECTION:'6678'}
-    ];
-    set('equipment',eq);
-  }
-  if (!up.length) {
-    up = [
-      { Date: '2025-11-05', Time: '07:30', 'Equipment ID': '364', Status: 'Fixed', Shift: 'Morning', 'Reason/Fault': 'Brake pads replaced', 'Downtime Hours': 3.5, 'Is Failure?': 1 },
-      { Date: '2025-11-04', Time: '14:20', 'Equipment ID': '217', Status: 'Down', Shift: 'Afternoon', 'Reason/Fault': 'Hydraulic leak', 'Downtime Hours': 8, 'Is Failure?': 1 },
-      { Date: '2025-11-10', Time: '09:00', 'Equipment ID': '15', Status: 'Down', Shift: 'Morning', 'Reason/Fault': 'BRAKES', 'Downtime Hours': 384, 'Is Failure?': 1 },
-      { Date: '2025-11-10', Time: '10:00', 'Equipment ID': '270', Status: 'Down', Shift: 'Morning', 'Reason/Fault': 'Not Starting', 'Downtime Hours': 0, 'Is Failure?': 1 },
-      { Date: '2025-11-10', Time: '11:00', 'Equipment ID': '155', Status: 'Down', Shift: 'Morning', 'Reason/Fault': 'BRAKES FAILURE', 'Downtime Hours': 0, 'Is Failure?': 1 }
-    ];
-    set('updates',up);
-  }
-  if (!mt.length) {
-    mt = [
-      {equipment:'364',task:'Oil Change',interval:'monthly',lastDone:'2025-05-01'},
-      {equipment:'444',task:'Brake Inspection',interval:'weekly',lastDone:'2025-05-20'},
-      {equipment:'217',task:'Service',interval:'weekly',lastDone:'2025-11-08'},
-      {equipment:'155',task:'REPLACE BRAKE SHOES',interval:'weekly',lastDone:'2025-11-07'},
-      {equipment:'158',task:'CHANGE OIL',interval:'weekly',lastDone:'2025-11-07'}
-    ];
-    set('maintenance',mt);
-  }
-  if (!delaysData.length) {
-    delaysData = [
-      { equipment: '364', reason: 'Awaiting Spares', hours: 8, date: '2025-11-04' },
-      { equipment: '217', reason: 'Safety Stand-down', hours: 4, date: '2025-11-05' }
-    ];
-    set('delays', delaysData);
-  }
-
-  document.getElementById('m-last').value = new Date().toISOString().slice(0,10);
-  document.getElementById('u-date').value = new Date().toISOString().slice(0,10);
-  document.getElementById('s-date').value = new Date().toISOString().slice(0,10);
-
-  fillDatalist(); populateDashboard(); populateLogTable(); populateSummaryTable();
-  populateEquipmentTable(); populateMaintTable(); show('dashboard');
+  // Show Dashboard by Default
+  document.querySelector('#sidebar-menu li.active').click();
 </script>
 </body>
 </html>
