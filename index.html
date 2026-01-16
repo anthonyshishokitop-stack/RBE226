@@ -751,27 +751,27 @@
     if (!id) return alert('Select an Equipment ID first');
     const {jsPDF} = window.jspdf;
     const doc = new jsPDF();
-    let y = 16;
+    let y = 15;
     doc.setFontSize(12);
-    doc.text('Job Order:',16,y); y+=12;
-    doc.text('Follow correct procedure to complete the task and attach risk assessment',16,y); y+=16;
-    doc.text('Work carried out / comments:',16,y); y+=10;
-    for (let i=0;i<3;i++){doc.line(16,y,190,y);y+=10;} y+=10;
-    doc.text('Job duration:',16,y); y+=10;
-    doc.text('Start date ______   Start time ______   End date ______   End time ______   Duration ______',16,y); y+=16;
-    doc.text('Failure Information:',16,y); y+=10;
+    doc.text('Job Order:',15,y); y+=12;
+    doc.text('Follow correct procedure to complete the task and attach risk assessment',15,y); y+=15;
+    doc.text('Work carried out / comments:',15,y); y+=10;
+    for (let i=0;i<3;i++){doc.line(15,y,190,y);y+=10;} y+=10;
+    doc.text('Job duration:',15,y); y+=10;
+    doc.text('Start date ______   Start time ______   End date ______   End time ______   Duration ______',15,y); y+=15;
+    doc.text('Failure Information:',15,y); y+=10;
     doc.autoTable({startY:y,head:[['Object part','Problem','Cause of damage','Activity carried out']],body:[['','','','']],theme:'grid',headStyles:{fillColor:[0,128,128]}});
     y = doc.lastAutoTable.finalY + 12;
-    doc.text("Five Why's:",16,y); y+=10;
+    doc.text("Five Why's:",15,y); y+=10;
     doc.autoTable({startY:y,head:[['Why','Why','Why','Why','Why']],body:[['','','','','']],theme:'grid',headStyles:{fillColor:[0,128,128]}});
     y = doc.lastAutoTable.finalY + 12;
-    doc.text('Lost time/delays (Hrs):',16,y); y+=10;
+    doc.text('Lost time/delays (Hrs):',15,y); y+=10;
     doc.autoTable({startY:y,head:[['Safety','Work Issues','Awaiting Spares','Hospital Visits','Awaiting Transport','Travel Time','Weather','Machn. Rel.']],body:[['SA','WI','AS','HV','AT','TT','WH','MR']],theme:'grid',headStyles:{fillColor:[0,128,128]}});
     y = doc.lastAutoTable.finalY + 12;
-    doc.text('Name- Artisan: ______   Sign: ______   Date: ______',16,y); y+=16;
-    doc.text('Comments- Foreman:',16,y); y+=10;
-    for (let i=0;i<3;i++){doc.line(16,y,190,y);y+=10;} y+=10;
-    doc.text('Name- Foreman: ______   Sign: ______   Date: ______',16,y);
+    doc.text('Name- Artisan: ______   Sign: ______   Date: ______',15,y); y+=15;
+    doc.text('Comments- Foreman:',15,y); y+=10;
+    for (let i=0;i<3;i++){doc.line(15,y,190,y);y+=10;} y+=10;
+    doc.text('Name- Foreman: ______   Sign: ______   Date: ______',15,y);
     doc.save(`Job_Order_${id}.pdf`);
   }
 
@@ -921,3 +921,4 @@
 </script>
 </body>
 </html>
+
